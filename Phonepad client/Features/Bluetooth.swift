@@ -12,6 +12,8 @@ class BLEManager: NSObject, ObservableObject {
         private var appSwitchCharacteristic: CBCharacteristic?
         private var appListRequestCharacteristic: CBCharacteristic?
         private var chunkAckCharacteristic: CBCharacteristic?
+        private var textTransferCharacteristic: CBCharacteristic?
+
         
         private let serviceUUID = CBUUID(string: "5FFB1810-2672-4FFE-B9B8-54122F7E4F99")
         private let characteristicUUID = CBUUID(string: "34722DA8-9E9A-44A3-BB59-9E8E3A41728E")
@@ -19,6 +21,8 @@ class BLEManager: NSObject, ObservableObject {
         private let appSwitchCharacteristicUUID = CBUUID(string: "D62D00F3-02ED-4005-B427-86B5E4881601")
         private let appListRequestCharacteristicUUID = CBUUID(string: "65E43765-0C73-4F52-85D3-C49D068AA5BF")
         private let chunkAckCharacteristicUUID = CBUUID(string: "C54DCF47-7708-40E9-90F9-013723282D14")
+    
+        private let textTransferCharacteristicUUID = CBUUID(string: "733E7C66-6D92-46F9-9EB3-276172C93C8A")
         
         private let sendQueue = DispatchQueue(label: "com.example.PhonepadClient.sendQueue", qos: .userInteractive)
         private var lastSentTime: Date = Date()
@@ -114,6 +118,47 @@ class BLEManager: NSObject, ObservableObject {
         let data = Data([0x01]) // You can use any data here, we just need to write something
         peripheral?.writeValue(data, for: characteristic, type: .withResponse)
     }
+    
+    func sendTextToMac(_ text: String) {
+        print("Attempting to send text to Mac. Length: \(text.count) characters")
+        
+        guard let data = text.data(using: .utf8) else {
+            print("Error: Unable to convert text to data")
+            return
+        }
+        
+        guard let peripheral = peripheral else {
+            print("Error: No peripheral connected")
+            return
+        }
+        
+        guard let characteristic = textTransferCharacteristic else {
+            print("Error: textTransferCharacteristic is nil")
+            return
+        }
+        
+        // Split the data into chunks if it's too large
+        let maxLength = peripheral.maximumWriteValueLength(for: .withResponse)
+        let chunks = data.chunked(into: maxLength)
+        
+        for (index, chunk) in chunks.enumerated() {
+            peripheral.writeValue(chunk, for: characteristic, type: .withResponse)
+            print("Sent chunk \(index + 1) of \(chunks.count)")
+        }
+        
+        print("All text data sent to Mac")
+    }
+
+    func testConnection() {
+        guard let peripheral = peripheral, let characteristic = textTransferCharacteristic else {
+            print("Error: Unable to test connection. Peripheral or characteristic is nil.")
+            return
+        }
+        
+        let testData = "test".data(using: .utf8)!
+        peripheral.writeValue(testData, for: characteristic, type: .withResponse)
+        print("Sent test data")
+    }
 }
 
 // MARK: - CBCentralManagerDelegate
@@ -167,6 +212,11 @@ extension BLEManager: CBCentralManagerDelegate {
         }
         print("Discovering services for peripheral")
         peripheral.discoverServices([serviceUUID])
+        
+        // Test the connection after a short delay to ensure characteristics are discovered
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.testConnection()
+        }
     }
     
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
@@ -199,68 +249,71 @@ extension BLEManager: CBCentralManagerDelegate {
 
 extension BLEManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-            print("Discovered services for peripheral: \(peripheral.name ?? "Unknown")")
-            if let error = error {
-                print("Error discovering services: \(error.localizedDescription)")
-                return
+        print("Discovered services for peripheral: \(peripheral.name ?? "Unknown")")
+        if let error = error {
+            print("Error discovering services: \(error.localizedDescription)")
+            return
+        }
+        
+        guard let services = peripheral.services else {
+            print("No services found")
+            return
+        }
+        
+        for service in services {
+            print("Discovered service: \(service.uuid)")
+            if service.uuid == serviceUUID {
+                print("Found matching service, discovering characteristics")
+                peripheral.discoverCharacteristics([characteristicUUID, appUpdateCharacteristicUUID, appSwitchCharacteristicUUID, appListRequestCharacteristicUUID, chunkAckCharacteristicUUID, textTransferCharacteristicUUID], for: service)
             }
-            
-            guard let services = peripheral.services else {
-                print("No services found")
-                return
-            }
-            
-            for service in services {
-                print("Discovered service: \(service.uuid)")
-                if service.uuid == serviceUUID {
-                    print("Found matching service, discovering characteristics")
-                    peripheral.discoverCharacteristics([characteristicUUID, appUpdateCharacteristicUUID, appSwitchCharacteristicUUID, appListRequestCharacteristicUUID, chunkAckCharacteristicUUID], for: service)
-                }
+        }
+    }
+        
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        print("Discovered characteristics for service: \(service.uuid)")
+        if let error = error {
+            print("Error discovering characteristics: \(error.localizedDescription)")
+            return
+        }
+        
+        guard let characteristics = service.characteristics else {
+            print("No characteristics found")
+            return
+        }
+        
+        for characteristic in characteristics {
+            print("Found characteristic: \(characteristic.uuid)")
+            switch characteristic.uuid {
+            case characteristicUUID:
+                self.writeCharacteristic = characteristic
+                print("Set write characteristic")
+            case appUpdateCharacteristicUUID:
+                self.appUpdateCharacteristic = characteristic
+                print("Set app update characteristic")
+                peripheral.setNotifyValue(true, for: characteristic)
+                print("Enabled notifications for app update characteristic")
+            case appSwitchCharacteristicUUID:
+                self.appSwitchCharacteristic = characteristic
+                print("Set app switch characteristic")
+            case appListRequestCharacteristicUUID:
+                self.appListRequestCharacteristic = characteristic
+                print("Set app list request characteristic")
+            case chunkAckCharacteristicUUID:
+                self.chunkAckCharacteristic = characteristic
+                print("Set chunk acknowledgment characteristic")
+            case textTransferCharacteristicUUID:
+                self.textTransferCharacteristic = characteristic
+                print("Set text transfer characteristic: \(characteristic.uuid)")
+            default:
+                print("Unknown characteristic: \(characteristic.uuid)")
             }
         }
         
-        func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-            print("Discovered characteristics for service: \(service.uuid)")
-            if let error = error {
-                print("Error discovering characteristics: \(error.localizedDescription)")
-                return
-            }
-            
-            guard let characteristics = service.characteristics else {
-                print("No characteristics found")
-                return
-            }
-            
-            for characteristic in characteristics {
-                print("Found characteristic: \(characteristic.uuid)")
-                switch characteristic.uuid {
-                case characteristicUUID:
-                    self.writeCharacteristic = characteristic
-                    print("Set write characteristic")
-                case appUpdateCharacteristicUUID:
-                    self.appUpdateCharacteristic = characteristic
-                    print("Set app update characteristic")
-                    peripheral.setNotifyValue(true, for: characteristic)
-                    print("Enabled notifications for app update characteristic")
-                case appSwitchCharacteristicUUID:
-                    self.appSwitchCharacteristic = characteristic
-                    print("Set app switch characteristic")
-                case appListRequestCharacteristicUUID:
-                    self.appListRequestCharacteristic = characteristic
-                    print("Set app list request characteristic")
-                case chunkAckCharacteristicUUID:
-                    self.chunkAckCharacteristic = characteristic
-                    print("Set chunk acknowledgment characteristic")
-                default:
-                    print("Unknown characteristic: \(characteristic.uuid)")
-                }
-            }
-            
-            print("Finished discovering characteristics, requesting app list")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self.requestAppList()
-            }
+        print("Finished discovering characteristics, requesting app list")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.requestAppList()
         }
+    }
         
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
@@ -399,6 +452,20 @@ enum GestureType: Int8 {
     case switchSpaceRight = 5
 }
 
+struct TrackpadData {
+    let deltaX: Int8
+    let deltaY: Int8
+    let gestureType: GestureType
+}
+
+extension Data {
+    func chunked(into size: Int) -> [Data] {
+        return stride(from: 0, to: count, by: size).map {
+            subdata(in: $0 ..< Swift.min($0 + size, count))
+        }
+    }
+}
+
 // MARK: - Preview Helpers
 
 #if DEBUG
@@ -423,6 +490,9 @@ class MockBLEManager: BLEManager {
     
     override func requestAppList() {
         print("Mock request app list")
+    }
+    override func sendTextToMac(_ text: String) {
+        print("Mock: Sending text to Mac: \(text)")
     }
 }
 #endif
